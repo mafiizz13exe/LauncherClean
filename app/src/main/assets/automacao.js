@@ -120,6 +120,53 @@
     return true;
   }
 
+  // ---- paginação ----
+  // O ExtJS recarrega a grade depois de cada "Gravar". Nesse instante o botão
+  // "Próxima Página" fica desabilitado/escondido e a grade pode voltar para a
+  // página 1. Por isso a navegação usa o store (página atual / total) e espera
+  // a carga terminar, em vez de confiar no estado do botão.
+  const storeDe = col => {
+    try { const c = Ext.getCmp(col); const g = c && c.up('gridpanel'); return g && g.getStore ? g.getStore() : null; }
+    catch (e) { return null; }
+  };
+  const carregando = st => { try { return !!(st && (st.isLoading ? st.isLoading() : st.loading)); } catch (e) { return false; } };
+  const paginaAtual = st => { try { return st.currentPage || 1; } catch (e) { return 1; } };
+  const totalPaginas = st => {
+    try { const t = st.getTotalCount(), ps = st.pageSize; if (t > 0 && ps > 0) return Math.ceil(t / ps); } catch (e) {}
+    return 0;
+  };
+  const chaveDe = c => { const tr = c.closest('tr'); return txt(tr || c).replace(/\s+/g, ' ').slice(0, 160); };
+
+  async function esperarGrade(col) {
+    const st = storeDe(col);
+    await sleep(600);
+    if (st) await ate(() => !carregando(st), 30000, 200);
+    await ate(() => celulas(colunaPrazo() || col).length > 0, 20000);
+    await sleep(1000);
+  }
+
+  async function irParaPagina(col, p) {
+    const st = storeDe(col);
+    if (!st || !st.loadPage) return false;
+    try { st.loadPage(p); } catch (e) { return false; }
+    await esperarGrade(col);
+    return paginaAtual(st) === p;
+  }
+
+  // plano B (sem store): clica em "Próxima Página", esperando o botão habilitar
+  async function proximaPorBotao(col) {
+    const acha = () => [...document.querySelectorAll('a.x-btn')].filter(vis)
+      .find(b => (b.getAttribute('data-qtip') || '') === 'Próxima Página');
+    const habilitado = () => { const b = acha(); return b && !/x-btn-disabled|x-item-disabled/.test(b.className) ? b : null; };
+    const b = await ate(habilitado, 12000, 300);
+    if (!b) return false;
+    const antes = [...document.querySelectorAll('.x-grid-item')].filter(vis).map(r => txt(r).slice(0, 40)).join('|');
+    clicar(b);
+    await esperarGrade(col);
+    const depois = [...document.querySelectorAll('.x-grid-item')].filter(vis).map(r => txt(r).slice(0, 40)).join('|');
+    return antes !== depois;
+  }
+
   try {
     limparPopups();
     const pronto = await ate(() => typeof openRouterAsTab === 'function', 30000);
@@ -130,43 +177,76 @@
     let col = await ate(colunaPrazo, 40000);
     if (!col) { fim('Falha: coluna "Prazo de Expedição" não apareceu'); return; }
     await ate(() => celulas(col).length > 0, 20000);
-    await sleep(1500);
+    await esperarGrade(col);
 
-    let pagina = 1, alterados = 0, erros = 0;
-    while (pagina <= 100) {
-      limparPopups();
-      col = colunaPrazo() || col;
-      const cels = celulas(col);
-      const alvos = [];
-      cels.forEach((c, i) => {
-        const m = txt(c).match(/\d+/);
-        if (m && parseInt(m[0], 10) === CFG.alvo) alvos.push(i);
-      });
-      log('Página ' + pagina + ': ' + cels.length + ' linhas, ' + alvos.length + ' com ' + CFG.alvo);
+    const st = storeDe(col);
+    if (st) log('Grade: ' + (st.getTotalCount ? st.getTotalCount() : '?') + ' registros, ' +
+      (totalPaginas(st) || '?') + ' página(s)');
+    else log('Aviso: store do Ext não encontrado, usando o botão "Próxima Página".');
 
-      for (const i of alvos) {
-        try { if (await editar(col, i)) alterados++; }
-        catch (e) {
-          erros++;
-          log('  erro na linha ' + (i + 1) + ': ' + e.message);
-          fechar(janelaAlterar());
-          await sleep(1000);
+    let alterados = 0, erros = 0, maxPagina = 1;
+    const tentados = new Set();
+
+    for (let varredura = 1; varredura <= 4; varredura++) {
+      let pagina = 1, nestaVarredura = 0;
+      if (st && paginaAtual(st) !== 1) await irParaPagina(col, 1);
+      log('Varredura ' + varredura);
+
+      while (pagina <= 300) {
+        if (pagina > maxPagina) maxPagina = pagina;
+        if (st && paginaAtual(st) !== pagina) {
+          log('  grade voltou para a página ' + paginaAtual(st) + ', indo para ' + pagina);
+          await irParaPagina(col, pagina);
+        }
+
+        // processa a página até não sobrar nenhuma linha com o prazo alvo
+        let primeiro = true;
+        for (let passo = 0; passo < 80; passo++) {
+          limparPopups();
+          col = colunaPrazo() || col;
+          const cels = celulas(col);
+          if (primeiro) {
+            const n = cels.filter(c => { const m = txt(c).match(/\d+/); return m && parseInt(m[0], 10) === CFG.alvo; }).length;
+            log('Página ' + pagina + ': ' + cels.length + ' linhas, ' + n + ' com ' + CFG.alvo);
+            primeiro = false;
+          }
+          let idx = -1, chave = '';
+          for (let i = 0; i < cels.length; i++) {
+            const m = txt(cels[i]).match(/\d+/);
+            if (!m || parseInt(m[0], 10) !== CFG.alvo) continue;
+            const k = chaveDe(cels[i]);
+            if (tentados.has(k)) continue;
+            idx = i; chave = k; break;
+          }
+          if (idx < 0) break;
+          tentados.add(chave);
+          try { if (await editar(col, idx)) { alterados++; nestaVarredura++; } }
+          catch (e) {
+            erros++;
+            log('  erro na linha ' + (idx + 1) + ': ' + e.message);
+            fechar(janelaAlterar());
+            await sleep(1000);
+          }
+          // a grade recarrega após gravar: espera e garante a mesma página
+          await esperarGrade(col);
+          if (st && paginaAtual(st) !== pagina) await irParaPagina(col, pagina);
+        }
+
+        // próxima página
+        const total = st ? totalPaginas(st) : 0;
+        if (st && total > 0) {
+          if (pagina >= total) break;
+          pagina++;
+          if (!(await irParaPagina(col, pagina))) { log('Não consegui abrir a página ' + pagina + ', encerrando a varredura.'); break; }
+        } else {
+          if (!(await proximaPorBotao(col))) break;
+          pagina++;
         }
       }
-
-      const assinatura = () => [...document.querySelectorAll('.x-grid-item')].filter(vis)
-        .map(r => txt(r).slice(0, 40)).join('|');
-      const antes = assinatura();
-      const prox = [...document.querySelectorAll('a.x-btn')].filter(vis)
-        .find(b => (b.getAttribute('data-qtip') || '') === 'Próxima Página');
-      if (!prox || /x-btn-disabled|x-item-disabled/.test(prox.className)) break;
-      clicar(prox);
-      pagina++;
-      await sleep(4000);
-      await ate(() => celulas(colunaPrazo() || col).length > 0, 20000);
-      if (assinatura() === antes) { log('A página não mudou, encerrando.'); break; }
+      log('Varredura ' + varredura + ' terminou: ' + nestaVarredura + ' alterado(s)');
+      if (nestaVarredura === 0) break; // nada mais a alterar
     }
-    fim('Concluído: ' + alterados + ' alterado(s), ' + erros + ' erro(s), ' + pagina + ' página(s)');
+    fim('Concluído: ' + alterados + ' alterado(s), ' + erros + ' erro(s), ' + maxPagina + ' página(s)');
   } catch (e) {
     fim('Erro: ' + e.message);
   }
