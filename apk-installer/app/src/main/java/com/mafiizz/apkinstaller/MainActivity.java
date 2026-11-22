@@ -3,8 +3,13 @@ package com.mafiizz.apkinstaller;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -49,13 +54,19 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
+import org.json.JSONObject;
 
 /**
  * APK Installer para Fire TV / Android TV.
+ * - Suporta APK simples e pacotes divididos (.xapk, .apks, .apkm), inclusive com arquivos OBB.
  * - Lista os APKs da pasta Downloads (e do resto do armazenamento / pendrive) e instala.
  * - Baixa um APK a partir de um link e instala em seguida.
  * Interface montada por código, toda navegável com o controle remoto (D-pad).
@@ -65,6 +76,7 @@ public class MainActivity extends Activity {
     private static final int REQ_STORAGE = 1;
     private static final int REQ_UNKNOWN = 2;
     private static final int MAX_FOUND = 300;
+    private static final String ACTION_INSTALL_RESULT = "com.mafiizz.apkinstaller.INSTALL_RESULT";
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<ApkItem> items = new ArrayList<>();
@@ -94,6 +106,7 @@ public class MainActivity extends Activity {
         String pkg;
         String version;
         boolean installed;
+        boolean bundle;
         String installedVersion;
 
         String title() {
@@ -108,6 +121,13 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         buildUi();
+        registerReceiver(installReceiver, new IntentFilter(ACTION_INSTALL_RESULT));
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        try { unregisterReceiver(installReceiver); } catch (Exception ignored) { }
     }
 
     @Override
@@ -129,7 +149,7 @@ public class MainActivity extends Activity {
             File f = pendingInstall;
             pendingInstall = null;
             if (Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls()) {
-                launchInstaller(f);
+                proceedInstall(f);
             } else {
                 toast("Instalação não foi liberada. Ative \"Permitir desta fonte\" e tente de novo.");
             }
@@ -145,7 +165,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(48), dp(28), dp(48), dp(20));
 
         TextView title = text("APK Installer", 30, Color.WHITE, true);
-        TextView sub = text("Cole o link de um APK para baixar e instalar, ou escolha um arquivo já baixado.",
+        TextView sub = text("Cole o link de um APK (ou pacote XAPK / APKS / APKM) para baixar e instalar, ou escolha um arquivo já baixado.",
                 16, 0xFF90CAF9, false);
         root.addView(title);
         root.addView(sub);
@@ -159,7 +179,7 @@ public class MainActivity extends Activity {
         urlInput.setSingleLine(true);
         urlInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         urlInput.setImeOptions(EditorInfo.IME_ACTION_GO);
-        urlInput.setHint("Link do APK (https://...)");
+        urlInput.setHint("Link do APK / XAPK / APKS / APKM (https://...)");
         urlInput.setHintTextColor(0xFF78909C);
         urlInput.setTextColor(Color.WHITE);
         urlInput.setTextSize(18);
@@ -207,7 +227,7 @@ public class MainActivity extends Activity {
         row2Lp.topMargin = dp(10);
         root.addView(row2, row2Lp);
 
-        header = text("APKs encontrados", 18, Color.WHITE, true);
+        header = text("Arquivos encontrados", 18, Color.WHITE, true);
         LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         hLp.topMargin = dp(18);
@@ -347,7 +367,7 @@ public class MainActivity extends Activity {
     private void scan() {
         if (scanning) return;
         scanning = true;
-        header.setText("Procurando APKs...");
+        header.setText("Procurando arquivos...");
         new Thread(() -> {
             final List<ApkItem> found = new ArrayList<>();
             try {
@@ -393,7 +413,7 @@ public class MainActivity extends Activity {
                 if (depth + 1 > maxDepth) continue;
                 if (name.startsWith(".") || name.equals("Android") || name.equals("LOST.DIR")) continue;
                 walk(f, depth + 1, maxDepth, out, seen);
-            } else if (name.toLowerCase(Locale.ROOT).endsWith(".apk")) {
+            } else if (isApkLike(name)) {
                 String key;
                 try {
                     key = f.getCanonicalPath();
@@ -405,12 +425,17 @@ public class MainActivity extends Activity {
                 it.file = f;
                 it.size = f.length();
                 it.modified = f.lastModified();
+                it.bundle = isBundleName(name);
                 out.add(it);
             }
         }
     }
 
     private void enrich(PackageManager pm, ApkItem it) {
+        if (it.bundle) {
+            enrichBundle(pm, it);
+            return;
+        }
         try {
             String path = it.file.getAbsolutePath();
             PackageInfo pi = pm.getPackageArchiveInfo(path, 0);
@@ -437,11 +462,11 @@ public class MainActivity extends Activity {
         items.clear();
         items.addAll(found);
         adapter.notifyDataSetChanged();
-        header.setText("APKs encontrados: " + items.size());
+        header.setText("Arquivos encontrados: " + items.size());
         if (!hasStoragePerm()) {
             empty.setText("Sem permissão para ler os arquivos.\nAperte \"Atualizar lista\" e permita o acesso.");
         } else {
-            empty.setText("Nenhum APK encontrado.\nBaixe um pelo link acima ou copie o arquivo para a pasta Downloads.");
+            empty.setText("Nenhum APK, XAPK, APKS ou APKM encontrado.\nBaixe um pelo link acima ou copie o arquivo para a pasta Downloads.");
         }
     }
 
@@ -499,7 +524,12 @@ public class MainActivity extends Activity {
                     .show();
             return;
         }
-        launchInstaller(f);
+        proceedInstall(f);
+    }
+
+    private void proceedInstall(File f) {
+        if (isBundleName(f.getName())) installBundle(f);
+        else launchInstaller(f);
     }
 
     private void openUnknownSourcesSettings() {
@@ -569,7 +599,7 @@ public class MainActivity extends Activity {
 
         cancelDownload = false;
         dlDialog = new AlertDialog.Builder(this)
-                .setTitle("Baixando APK")
+                .setTitle("Baixando arquivo")
                 .setView(box)
                 .setCancelable(false)
                 .setNegativeButton("Cancelar", (dialog, which) -> cancelDownload = true)
@@ -650,7 +680,7 @@ public class MainActivity extends Activity {
             }
             if (!looksLikeApk(out)) {
                 out.delete();
-                throw new IOException("O arquivo baixado não parece ser um APK. Confira se o link leva direto ao arquivo .apk.");
+                throw new IOException("O arquivo baixado não parece ser um APK/XAPK/APKS/APKM. Confira se o link leva direto ao arquivo.");
             }
 
             final File finalOut = out;
@@ -728,21 +758,307 @@ public class MainActivity extends Activity {
             name = name.replaceAll("[^A-Za-z0-9._()-]", "_").trim();
         }
         if (name == null || name.length() == 0) name = "app.apk";
-        if (!name.toLowerCase(Locale.ROOT).endsWith(".apk")) name = name + ".apk";
+        if (!isApkLike(name)) name = name + ".apk";
         return name;
     }
 
     private File uniqueFile(File dir, String name) {
         File f = new File(dir, name);
         if (!f.exists()) return f;
-        String base = name.substring(0, name.length() - 4);
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : ".apk";
         int i = 1;
         while (true) {
-            f = new File(dir, base + " (" + i + ").apk");
+            f = new File(dir, base + " (" + i + ")" + ext);
             if (!f.exists()) return f;
             i++;
         }
     }
+
+    // ---------------------------------------------------------------- pacotes .xapk / .apks / .apkm
+
+    private static boolean isBundleName(String n) {
+        n = n.toLowerCase(Locale.ROOT);
+        return n.endsWith(".xapk") || n.endsWith(".apks") || n.endsWith(".apkm");
+    }
+
+    private static boolean isApkLike(String n) {
+        return n.toLowerCase(Locale.ROOT).endsWith(".apk") || isBundleName(n);
+    }
+
+    private static String baseName(String path) {
+        String p = path.replace('\\', '/');
+        int i = p.lastIndexOf('/');
+        return i >= 0 ? p.substring(i + 1) : p;
+    }
+
+    private static String readAll(InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        byte[] b = new byte[8192];
+        int n;
+        while ((n = in.read(b)) != -1) bo.write(b, 0, n);
+        in.close();
+        return bo.toString("UTF-8");
+    }
+
+    private static String firstNonEmpty(String a, String b) {
+        if (a != null && a.length() > 0) return a;
+        return b != null && b.length() > 0 ? b : null;
+    }
+
+    private ZipEntry findBase(ZipFile zf) {
+        ZipEntry fallback = null;
+        Enumeration<? extends ZipEntry> en = zf.entries();
+        while (en.hasMoreElements()) {
+            ZipEntry e = en.nextElement();
+            if (e.isDirectory()) continue;
+            String n = baseName(e.getName()).toLowerCase(Locale.ROOT);
+            if (!n.endsWith(".apk")) continue;
+            if (n.equals("base.apk") || n.equals("base-master.apk")) return e;
+            if (!n.contains("config") && fallback == null) fallback = e;
+        }
+        return fallback;
+    }
+
+    private JSONObject bundleMeta(ZipFile zf) {
+        try {
+            ZipEntry me = zf.getEntry("manifest.json");
+            if (me == null) me = zf.getEntry("info.json");
+            if (me == null) return null;
+            return new JSONObject(readAll(zf.getInputStream(me)));
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private String bundlePackage(ZipFile zf) {
+        JSONObject j = bundleMeta(zf);
+        if (j == null) return null;
+        return firstNonEmpty(j.optString("package_name"), j.optString("pname"));
+    }
+
+    private void enrichBundle(PackageManager pm, ApkItem it) {
+        ZipFile zf = null;
+        try {
+            zf = new ZipFile(it.file);
+            JSONObject j = bundleMeta(zf);
+            if (j != null) {
+                it.pkg = firstNonEmpty(j.optString("package_name"), j.optString("pname"));
+                it.label = firstNonEmpty(j.optString("name"), j.optString("app_name"));
+                it.version = firstNonEmpty(j.optString("version_name"), j.optString("versionname"));
+            }
+            if (it.pkg == null || it.label == null) {
+                ZipEntry base = findBase(zf);
+                if (base != null) {
+                    File tmp = new File(getCacheDir(), "probe.apk");
+                    copyEntry(zf, base, tmp);
+                    PackageInfo pi = pm.getPackageArchiveInfo(tmp.getAbsolutePath(), 0);
+                    if (pi != null) {
+                        if (it.pkg == null) it.pkg = pi.packageName;
+                        if (it.version == null) it.version = pi.versionName;
+                        if (it.label == null && pi.applicationInfo != null) {
+                            pi.applicationInfo.sourceDir = tmp.getAbsolutePath();
+                            pi.applicationInfo.publicSourceDir = tmp.getAbsolutePath();
+                            CharSequence l = pi.applicationInfo.loadLabel(pm);
+                            if (l != null) it.label = l.toString();
+                        }
+                    }
+                    tmp.delete();
+                }
+            }
+            if (it.pkg != null) {
+                try {
+                    PackageInfo inst = pm.getPackageInfo(it.pkg, 0);
+                    it.installed = true;
+                    it.installedVersion = inst.versionName;
+                } catch (PackageManager.NameNotFoundException ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (zf != null) try { zf.close(); } catch (IOException ignored) { }
+        }
+    }
+
+    private void copyEntry(ZipFile zf, ZipEntry e, File dest) throws IOException {
+        File parent = dest.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+        InputStream in = zf.getInputStream(e);
+        OutputStream os = new FileOutputStream(dest);
+        try {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) != -1) os.write(buf, 0, n);
+        } finally {
+            try { os.close(); } catch (IOException ignored) { }
+            try { in.close(); } catch (IOException ignored) { }
+        }
+    }
+
+    /** Decide se um split (config.*) serve para este aparelho: ABI, densidade de tela ou idioma. */
+    private boolean wantSplit(String fileName) {
+        String n = fileName.toLowerCase(Locale.ROOT);
+        if (n.endsWith(".apk")) n = n.substring(0, n.length() - 4);
+        int idx = n.lastIndexOf("config.");
+        if (idx < 0) return true; // base ou split de recurso/feature: instala
+        String tok = n.substring(idx + 7).replace('-', '_');
+
+        String[] abis = {"arm64_v8a", "armeabi_v7a", "armeabi", "x86_64", "x86", "mips64", "mips"};
+        for (String a : abis) {
+            if (tok.equals(a)) {
+                for (String sup : Build.SUPPORTED_ABIS) {
+                    if (sup.toLowerCase(Locale.ROOT).replace('-', '_').equals(a)) return true;
+                }
+                return false;
+            }
+        }
+        String[] dens = {"ldpi", "mdpi", "tvdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi", "nodpi"};
+        for (String d : dens) {
+            if (tok.equals(d)) {
+                if (d.equals("nodpi")) return true;
+                return d.equals(deviceDensityBucket());
+            }
+        }
+        String lang = Locale.getDefault().getLanguage().toLowerCase(Locale.ROOT);
+        String t = tok.split("_")[0];
+        return t.equals(lang) || t.equals("en");
+    }
+
+    private String deviceDensityBucket() {
+        int d = getResources().getDisplayMetrics().densityDpi;
+        if (d <= 120) return "ldpi";
+        if (d <= 160) return "mdpi";
+        if (d <= 213) return "tvdpi";
+        if (d <= 240) return "hdpi";
+        if (d <= 320) return "xhdpi";
+        if (d <= 480) return "xxhdpi";
+        return "xxxhdpi";
+    }
+
+    private void installBundle(final File f) {
+        final TextView status = text("Preparando instalação...", 16, Color.WHITE, false);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(16), dp(24), dp(8));
+        box.addView(status);
+        ProgressBar pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pb.setIndeterminate(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(12);
+        box.addView(pb, lp);
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Instalando pacote")
+                .setView(box)
+                .setCancelable(false)
+                .create();
+        dlg.show();
+
+        new Thread(() -> {
+            ZipFile zf = null;
+            PackageInstaller.Session session = null;
+            try {
+                zf = new ZipFile(f);
+                String pkg = bundlePackage(zf);
+                PackageInstaller pi = getPackageManager().getPackageInstaller();
+                PackageInstaller.SessionParams sp = new PackageInstaller.SessionParams(
+                        PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+                if (pkg != null) sp.setAppPackageName(pkg);
+                int id = pi.createSession(sp);
+                session = pi.openSession(id);
+
+                int count = 0;
+                Enumeration<? extends ZipEntry> en = zf.entries();
+                while (en.hasMoreElements()) {
+                    ZipEntry e = en.nextElement();
+                    if (e.isDirectory()) continue;
+                    String name = e.getName().replace('\\', '/');
+                    String lower = name.toLowerCase(Locale.ROOT);
+                    if (name.contains("..")) continue;
+                    if (lower.endsWith(".apk")) {
+                        if (!wantSplit(baseName(name))) continue;
+                        final String shown = baseName(name);
+                        ui.post(() -> status.setText("Copiando " + shown + "..."));
+                        InputStream in = zf.getInputStream(e);
+                        OutputStream os = session.openWrite("split_" + count + ".apk", 0, e.getSize());
+                        try {
+                            byte[] buf = new byte[64 * 1024];
+                            int n;
+                            while ((n = in.read(buf)) != -1) os.write(buf, 0, n);
+                            session.fsync(os);
+                        } finally {
+                            try { os.close(); } catch (IOException ignored) { }
+                            try { in.close(); } catch (IOException ignored) { }
+                        }
+                        count++;
+                    } else if (lower.endsWith(".obb")) {
+                        File dest;
+                        if (name.startsWith("Android/obb/")) {
+                            dest = new File(Environment.getExternalStorageDirectory(), name);
+                        } else if (pkg != null) {
+                            dest = new File(Environment.getExternalStorageDirectory(),
+                                    "Android/obb/" + pkg + "/" + baseName(name));
+                        } else {
+                            continue;
+                        }
+                        final String shown = baseName(name);
+                        ui.post(() -> status.setText("Copiando dados do app (" + shown + ")..."));
+                        copyEntry(zf, e, dest);
+                    }
+                }
+                if (count == 0) throw new IOException("Nenhum APK encontrado dentro do pacote.");
+
+                ui.post(() -> status.setText("Abrindo instalador..."));
+                Intent cb = new Intent(ACTION_INSTALL_RESULT).setPackage(getPackageName());
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                        | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
+                PendingIntent pend = PendingIntent.getBroadcast(this, id, cb, flags);
+                session.commit(pend.getIntentSender());
+                session.close();
+                session = null;
+                ui.post(dlg::dismiss);
+            } catch (final Exception e) {
+                if (session != null) {
+                    try { session.abandon(); } catch (Exception ignored) { }
+                }
+                ui.post(() -> {
+                    try { dlg.dismiss(); } catch (Exception ignored) { }
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("Falha ao preparar o pacote")
+                            .setMessage(e.getMessage() != null ? e.getMessage() : e.toString())
+                            .setPositiveButton("OK", null)
+                            .show();
+                });
+            } finally {
+                if (zf != null) try { zf.close(); } catch (IOException ignored) { }
+            }
+        }).start();
+    }
+
+    private final BroadcastReceiver installReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context c, Intent i) {
+            int st = i.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+            if (st == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                Intent confirm = (Intent) i.getParcelableExtra(Intent.EXTRA_INTENT);
+                if (confirm != null) {
+                    confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    try { startActivity(confirm); } catch (Exception e) { toast("Não foi possível abrir a confirmação: " + e.getMessage()); }
+                }
+            } else if (st == PackageInstaller.STATUS_SUCCESS) {
+                toast("App instalado com sucesso");
+                scan();
+            } else {
+                String m = i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Falha na instalação")
+                        .setMessage(m != null ? m : "Código " + st)
+                        .setPositiveButton("OK", null)
+                        .show();
+            }
+        }
+    };
 
     // ---------------------------------------------------------------- utilidades
 
