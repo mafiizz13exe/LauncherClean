@@ -2,6 +2,9 @@ name: Build APK
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'apk-installer/**'
+      - '.github/workflows/build-apk-installer.yml'
   workflow_dispatch:
 
 permissions:

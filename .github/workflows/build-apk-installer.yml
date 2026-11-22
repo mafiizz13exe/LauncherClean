@@ -1,0 +1,56 @@
+name: Build APK Installer
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apk-installer/**'
+      - '.github/workflows/build-apk-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.9 }
+      - name: Compilar
+        working-directory: apk-installer
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon 2>&1 | tee ../build-installer.log
+      - name: Salvar erros do build (branch ci-log-installer)
+        if: failure()
+        run: |
+          grep -E "^e: |error:|FAILED|What went wrong|Execution failed|warning: \[" -A4 build-installer.log | head -200 > /tmp/errors.txt || true
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan ci-log-installer
+          git rm -rf . > /dev/null 2>&1 || true
+          cp /tmp/errors.txt build-errors.txt
+          git add build-errors.txt
+          git commit -m "erros do build do APK Installer ${{ github.run_number }}" > /dev/null
+          git push -f origin ci-log-installer
+      - name: Nomear o APK
+        run: cp apk-installer/app/build/outputs/apk/release/*.apk APK-Installer.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: APK-Installer
+          path: APK-Installer.apk
+      - name: Publicar na aba Releases (link fixo)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # tag fixa "apk-installer": o link de download nunca muda, então dá para digitar na TV
+          gh release delete apk-installer --cleanup-tag -y || true
+          gh release create apk-installer APK-Installer.apk \
+            --target "$GITHUB_SHA" \
+            --title "APK Installer (Fire TV)" \
+            --notes "Instalador de APK para Fire TV / Android TV. Build ${{ github.run_number }}. Baixe o arquivo APK-Installer.apk e instale." \
+            --latest=false
