@@ -1,0 +1,55 @@
+name: Build Alarme Forte
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'alarme-forte/**'
+      - '.github/workflows/build-alarme-forte.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.9 }
+      - name: Compilar
+        working-directory: alarme-forte
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon 2>&1 | tee ../build-alarme.log
+      - name: Salvar erros do build (branch ci-log-alarme)
+        if: failure()
+        run: |
+          grep -E "^e: |error:|FAILED|What went wrong|Execution failed|warning: \[" -A4 build-alarme.log | head -200 > /tmp/errors.txt || true
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan ci-log-alarme
+          git rm -rf . > /dev/null 2>&1 || true
+          cp /tmp/errors.txt build-errors.txt
+          git add build-errors.txt
+          git commit -m "erros do build do Alarme Forte ${{ github.run_number }}" > /dev/null
+          git push -f origin ci-log-alarme
+      - name: Nomear o APK
+        run: cp alarme-forte/app/build/outputs/apk/release/*.apk AlarmeForte.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AlarmeForte
+          path: AlarmeForte.apk
+      - name: Publicar na aba Releases (link fixo)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete alarme-forte --cleanup-tag -y || true
+          gh release create alarme-forte AlarmeForte.apk \
+            --target "$GITHUB_SHA" \
+            --title "Alarme Forte" \
+            --notes "Sobe o volume do alarme ao máximo e escala com sirene aguda após 1 min. Build ${{ github.run_number }}. Baixe o AlarmeForte.apk e instale." \
+            --latest=false
