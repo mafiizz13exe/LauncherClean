@@ -9,6 +9,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageInfo;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.text.TextUtils;
+import android.widget.ImageView;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -108,6 +115,9 @@ public class MainActivity extends Activity {
         boolean installed;
         boolean bundle;
         String installedVersion;
+        Drawable icon;
+        long versionCode;
+        long installedCode;
 
         String title() {
             return label != null && label.length() > 0 ? label : file.getName();
@@ -158,19 +168,57 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- interface
 
+    private static final int C_BG_TOP = 0xFF0A1020;
+    private static final int C_BG_BOTTOM = 0xFF13203B;
+    private static final int C_SURFACE = 0xFF172238;
+    private static final int C_SURFACE_HI = 0xFF22335A;
+    private static final int C_ACCENT = 0xFF4F8CFF;
+    private static final int C_ACCENT_2 = 0xFF22D3EE;
+    private static final int C_OK = 0xFF34D399;
+    private static final int C_WARN = 0xFFFBBF24;
+    private static final int C_BUNDLE = 0xFFA78BFA;
+    private static final int C_TEXT = 0xFFF1F5F9;
+    private static final int C_MUTED = 0xFF94A3B8;
+    private static final int C_DIM = 0xFF64748B;
+
+    private TextView countChip;
+
     private void buildUi() {
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{C_BG_TOP, C_BG_BOTTOM});
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(0xFF101418);
-        root.setPadding(dp(48), dp(28), dp(48), dp(20));
+        root.setBackground(bg);
+        root.setPadding(dp(56), dp(30), dp(56), dp(18));
 
-        TextView title = text("APK Installer", 30, Color.WHITE, true);
-        TextView sub = text("Cole o link de um APK (ou pacote XAPK / APKS / APKM) para baixar e instalar, ou escolha um arquivo já baixado.",
-                16, 0xFF90CAF9, false);
-        root.addView(title);
-        root.addView(sub);
+        // ---- cabeçalho: logo + título + contador
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
 
-        // linha 1: link + botão baixar
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.mipmap.ic_launcher);
+        head.addView(logo, new LinearLayout.LayoutParams(dp(60), dp(60)));
+
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        titles.addView(text("APK Installer", 32, C_TEXT, true));
+        titles.addView(text("Instale APK, XAPK, APKS e APKM direto na sua TV", 15, C_MUTED, false));
+        LinearLayout.LayoutParams tLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tLp.leftMargin = dp(16);
+        head.addView(titles, tLp);
+        root.addView(head);
+
+        // ---- cartão: baixar por link
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(rounded(C_SURFACE, 0, 0, dp(18)));
+        card.setPadding(dp(22), dp(18), dp(22), dp(20));
+
+        card.addView(text("Baixar por link", 17, C_TEXT, true));
+        TextView cardSub = text("Cole o endereço direto de um APK, XAPK, APKS ou APKM.", 13, C_MUTED, false);
+        card.addView(cardSub);
+
         LinearLayout row1 = new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
         row1.setGravity(Gravity.CENTER_VERTICAL);
@@ -179,67 +227,83 @@ public class MainActivity extends Activity {
         urlInput.setSingleLine(true);
         urlInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         urlInput.setImeOptions(EditorInfo.IME_ACTION_GO);
-        urlInput.setHint("Link do APK / XAPK / APKS / APKM (https://...)");
-        urlInput.setHintTextColor(0xFF78909C);
-        urlInput.setTextColor(Color.WHITE);
+        urlInput.setHint("https://exemplo.com/app.apk");
+        urlInput.setHintTextColor(C_DIM);
+        urlInput.setTextColor(C_TEXT);
         urlInput.setTextSize(18);
-        urlInput.setPadding(dp(16), dp(12), dp(16), dp(12));
-        urlInput.setBackground(stateBg(0xFF1C242B, 0xFF1C242B, 0xFF29B6F6));
+        urlInput.setPadding(dp(18), dp(12), dp(18), dp(12));
+        urlInput.setBackground(stateBg(0xFF0F1830, 0xFF0F1830, C_ACCENT_2, dp(12)));
         urlInput.setOnEditorActionListener((v, actionId, event) -> {
             startDownload();
             return true;
         });
-        LinearLayout.LayoutParams urlLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        row1.addView(urlInput, urlLp);
+        row1.addView(urlInput, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button go = makeButton("Baixar e instalar");
+        Button go = makeButton("Baixar e instalar", true);
         go.setOnClickListener(v -> startDownload());
         LinearLayout.LayoutParams goLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        goLp.leftMargin = dp(12);
+        goLp.leftMargin = dp(14);
         row1.addView(go, goLp);
 
         LinearLayout.LayoutParams row1Lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        row1Lp.topMargin = dp(16);
-        root.addView(row1, row1Lp);
+        row1Lp.topMargin = dp(12);
+        card.addView(row1, row1Lp);
 
-        // linha 2: atualizar + permissão
-        LinearLayout row2 = new LinearLayout(this);
-        row2.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cardLp.topMargin = dp(18);
+        root.addView(card, cardLp);
 
-        Button refresh = makeButton("Atualizar lista");
+        // ---- título da seção + contador + ações
+        LinearLayout sec = new LinearLayout(this);
+        sec.setOrientation(LinearLayout.HORIZONTAL);
+        sec.setGravity(Gravity.CENTER_VERTICAL);
+
+        header = text("Arquivos encontrados", 20, C_TEXT, true);
+        sec.addView(header);
+
+        countChip = new TextView(this);
+        styleChip(countChip, "0", C_ACCENT_2);
+        LinearLayout.LayoutParams ccLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ccLp.leftMargin = dp(12);
+        sec.addView(countChip, ccLp);
+
+        View spacer = new View(this);
+        sec.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+
+        Button refresh = makeButton("Atualizar lista", false);
         refresh.setOnClickListener(v -> {
             askedStorage = false;
             ensureStorageThenScan(true);
         });
-        row2.addView(refresh);
+        sec.addView(refresh);
 
-        Button perm = makeButton("Permitir instalação");
+        Button perm = makeButton("Permitir instalação", false);
         perm.setOnClickListener(v -> openUnknownSourcesSettings());
         LinearLayout.LayoutParams permLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         permLp.leftMargin = dp(12);
-        row2.addView(perm, permLp);
+        sec.addView(perm, permLp);
 
-        LinearLayout.LayoutParams row2Lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        row2Lp.topMargin = dp(10);
-        root.addView(row2, row2Lp);
+        LinearLayout.LayoutParams secLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        secLp.topMargin = dp(22);
+        secLp.bottomMargin = dp(10);
+        root.addView(sec, secLp);
 
-        header = text("Arquivos encontrados", 18, Color.WHITE, true);
-        LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hLp.topMargin = dp(18);
-        hLp.bottomMargin = dp(8);
-        root.addView(header, hLp);
-
-        // lista + mensagem de vazio
+        // ---- lista + estado vazio
         FrameLayout box = new FrameLayout(this);
         list = new ListView(this);
         list.setDivider(null);
-        list.setDividerHeight(dp(6));
-        list.setSelector(rounded(0x3329B6F6, 0xFF29B6F6, dp(2)));
+        list.setDividerHeight(dp(10));
+        list.setClipToPadding(false);
+        list.setPadding(dp(4), dp(4), dp(4), dp(4));
+        list.setVerticalScrollBarEnabled(false);
+        list.setDrawSelectorOnTop(true);
+        list.setSelector(rounded(0x1A22D3EE, C_ACCENT_2, dp(3), dp(16)));
         adapter = new ApkAdapter();
         list.setAdapter(adapter);
         list.setOnItemClickListener((parent, view, position, id) -> {
@@ -248,16 +312,47 @@ public class MainActivity extends Activity {
         box.addView(list, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        empty = text("Procurando APKs...", 18, 0xFF90A4AE, false);
+        LinearLayout emptyBox = new LinearLayout(this);
+        emptyBox.setOrientation(LinearLayout.VERTICAL);
+        emptyBox.setGravity(Gravity.CENTER);
+        TextView badge = text("APK", 26, C_ACCENT_2, true);
+        badge.setGravity(Gravity.CENTER);
+        badge.setBackground(rounded(C_SURFACE, 0, 0, dp(28)));
+        emptyBox.addView(badge, new LinearLayout.LayoutParams(dp(96), dp(96)));
+        empty = text("Procurando APKs...", 17, C_MUTED, false);
         empty.setGravity(Gravity.CENTER);
-        box.addView(empty, new FrameLayout.LayoutParams(
+        LinearLayout.LayoutParams eLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        eLp.topMargin = dp(16);
+        emptyBox.addView(empty, eLp);
+        box.addView(emptyBox, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        list.setEmptyView(empty);
+        list.setEmptyView(emptyBox);
 
         root.addView(box, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        TextView hint = text("Controle remoto:  setas para navegar  •  OK para selecionar  •  Voltar para sair",
+                12, C_DIM, false);
+        LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hLp.topMargin = dp(8);
+        root.addView(hint, hLp);
+
         setContentView(root);
+
+        root.setAlpha(0f);
+        root.animate().alpha(1f).setDuration(350).start();
+    }
+
+    private static class RowHolder {
+        FrameLayout iconBox;
+        ImageView icon;
+        TextView letter;
+        TextView title;
+        TextView sub;
+        TextView typeChip;
+        TextView statusChip;
     }
 
     private class ApkAdapter extends BaseAdapter {
@@ -268,34 +363,111 @@ public class MainActivity extends Activity {
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
             LinearLayout row;
+            RowHolder h;
             if (convertView == null) {
                 row = new LinearLayout(MainActivity.this);
-                row.setOrientation(LinearLayout.VERTICAL);
-                row.setPadding(dp(16), dp(12), dp(16), dp(12));
-                TextView t1 = text("", 20, Color.WHITE, true);
-                TextView t2 = text("", 14, 0xFFB0BEC5, false);
-                row.addView(t1);
-                row.addView(t2);
-                row.setTag(new TextView[]{t1, t2});
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(18), dp(14), dp(18), dp(14));
+                row.setBackground(rounded(C_SURFACE, 0, 0, dp(16)));
+                h = new RowHolder();
+
+                h.iconBox = new FrameLayout(MainActivity.this);
+                h.icon = new ImageView(MainActivity.this);
+                h.icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                h.iconBox.addView(h.icon, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                h.letter = text("", 24, Color.WHITE, true);
+                h.letter.setGravity(Gravity.CENTER);
+                h.iconBox.addView(h.letter, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                row.addView(h.iconBox, new LinearLayout.LayoutParams(dp(56), dp(56)));
+
+                LinearLayout col = new LinearLayout(MainActivity.this);
+                col.setOrientation(LinearLayout.VERTICAL);
+                h.title = text("", 20, C_TEXT, true);
+                h.title.setSingleLine(true);
+                h.title.setEllipsize(TextUtils.TruncateAt.END);
+                h.sub = text("", 13, C_MUTED, false);
+                h.sub.setMaxLines(2);
+                h.sub.setEllipsize(TextUtils.TruncateAt.END);
+                col.addView(h.title);
+                col.addView(h.sub);
+                LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                colLp.leftMargin = dp(16);
+                colLp.rightMargin = dp(12);
+                row.addView(col, colLp);
+
+                LinearLayout chips = new LinearLayout(MainActivity.this);
+                chips.setOrientation(LinearLayout.HORIZONTAL);
+                chips.setGravity(Gravity.CENTER_VERTICAL);
+                h.statusChip = new TextView(MainActivity.this);
+                h.typeChip = new TextView(MainActivity.this);
+                chips.addView(h.statusChip);
+                LinearLayout.LayoutParams tcLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                tcLp.leftMargin = dp(8);
+                chips.addView(h.typeChip, tcLp);
+                row.addView(chips);
+
+                row.setTag(h);
             } else {
                 row = (LinearLayout) convertView;
+                h = (RowHolder) row.getTag();
             }
-            TextView[] tv = (TextView[]) row.getTag();
+
             ApkItem it = items.get(position);
-            tv[0].setText(it.title());
+            h.title.setText(it.title());
+
+            if (it.icon != null) {
+                h.icon.setVisibility(View.VISIBLE);
+                h.icon.setImageDrawable(it.icon);
+                h.letter.setVisibility(View.GONE);
+                h.iconBox.setBackground(null);
+            } else {
+                h.icon.setVisibility(View.GONE);
+                h.letter.setVisibility(View.VISIBLE);
+                String t = it.title();
+                h.letter.setText(t.length() > 0 ? t.substring(0, 1).toUpperCase(Locale.getDefault()) : "?");
+                h.iconBox.setBackground(rounded(it.bundle ? 0xFF5B4B9A : 0xFF2F5FB8, 0, 0, dp(14)));
+            }
 
             StringBuilder sb = new StringBuilder();
-            if (it.installed) {
-                sb.append("Já instalado");
-                if (it.installedVersion != null) sb.append(" (v").append(it.installedVersion).append(")");
-                sb.append(" • ");
-            }
-            if (it.version != null) sb.append("v").append(it.version).append(" • ");
-            sb.append(formatSize(it.size)).append(" • ").append(shortFolder(it.file.getParent()));
+            if (it.version != null) sb.append("v").append(it.version).append("  •  ");
+            sb.append(formatSize(it.size)).append("  •  ").append(shortFolder(it.file.getParent()));
             if (it.label != null) sb.append("\n").append(it.file.getName());
-            tv[1].setText(sb.toString());
+            h.sub.setText(sb.toString());
+
+            styleChip(h.typeChip, typeName(it.file.getName()), it.bundle ? C_BUNDLE : C_ACCENT);
+
+            if (it.installed) {
+                boolean newer = it.versionCode > 0 && it.installedCode > 0 && it.versionCode > it.installedCode;
+                boolean older = it.versionCode > 0 && it.installedCode > 0 && it.versionCode < it.installedCode;
+                if (newer) styleChip(h.statusChip, "Atualização", C_WARN);
+                else if (older) styleChip(h.statusChip, "Versão antiga", C_DIM);
+                else styleChip(h.statusChip, "Instalado", C_OK);
+                h.statusChip.setVisibility(View.VISIBLE);
+            } else {
+                h.statusChip.setVisibility(View.GONE);
+            }
             return row;
         }
+    }
+
+    private static String typeName(String fileName) {
+        String n = fileName.toLowerCase(Locale.ROOT);
+        int dot = n.lastIndexOf('.');
+        return dot >= 0 ? n.substring(dot + 1).toUpperCase(Locale.ROOT) : "APK";
+    }
+
+    private void styleChip(TextView t, String s, int color) {
+        t.setText(s);
+        t.setTextColor(color);
+        t.setTextSize(12);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setSingleLine(true);
+        t.setPadding(dp(12), dp(4), dp(12), dp(4));
+        t.setBackground(rounded((color & 0x00FFFFFF) | 0x26000000, 0, 0, dp(20)));
     }
 
     private TextView text(String s, int sp, int color, boolean bold) {
@@ -307,32 +479,75 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private Button makeButton(String label) {
+    private Button makeButton(String label, boolean primary) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(Color.WHITE);
-        b.setTextSize(18);
+        b.setTextSize(16);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setFocusable(true);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
         b.setPadding(dp(24), dp(12), dp(24), dp(12));
-        b.setBackground(stateBg(0xFF263238, 0xFF2979FF, 0xFFFFFFFF));
+        b.setStateListAnimator(null);
+        b.setBackground(buttonBg(primary));
+        b.setOnFocusChangeListener((v, has) ->
+                v.animate().scaleX(has ? 1.06f : 1f).scaleY(has ? 1.06f : 1f).setDuration(120).start());
         return b;
     }
 
-    private StateListDrawable stateBg(int normal, int focusedFill, int focusedStroke) {
+    private StateListDrawable buttonBg(boolean primary) {
         StateListDrawable sl = new StateListDrawable();
-        sl.addState(new int[]{android.R.attr.state_focused}, rounded(focusedFill, focusedStroke, dp(2)));
-        sl.addState(new int[]{android.R.attr.state_pressed}, rounded(focusedFill, 0, 0));
-        sl.addState(new int[]{}, rounded(normal, 0, 0));
+        GradientDrawable focused;
+        GradientDrawable normal;
+        if (primary) {
+            focused = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xFF6AA2FF, 0xFF4BE3F7});
+            normal = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{C_ACCENT, 0xFF1BA9C4});
+        } else {
+            focused = new GradientDrawable();
+            focused.setColor(0xFF31497F);
+            normal = new GradientDrawable();
+            normal.setColor(C_SURFACE_HI);
+        }
+        focused.setCornerRadius(dp(12));
+        focused.setStroke(dp(2), Color.WHITE);
+        normal.setCornerRadius(dp(12));
+        GradientDrawable pressed = new GradientDrawable();
+        pressed.setColor(0xFF2B63D9);
+        pressed.setCornerRadius(dp(12));
+        sl.addState(new int[]{android.R.attr.state_focused}, focused);
+        sl.addState(new int[]{android.R.attr.state_pressed}, pressed);
+        sl.addState(new int[]{}, normal);
         return sl;
     }
 
-    private GradientDrawable rounded(int fill, int stroke, int strokeWidth) {
+    private StateListDrawable stateBg(int normal, int focusedFill, int focusedStroke, int radius) {
+        StateListDrawable sl = new StateListDrawable();
+        sl.addState(new int[]{android.R.attr.state_focused}, rounded(focusedFill, focusedStroke, dp(2), radius));
+        sl.addState(new int[]{}, rounded(normal, 0, 0, radius));
+        return sl;
+    }
+
+    private GradientDrawable rounded(int fill, int stroke, int strokeWidth, int radius) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(fill);
-        g.setCornerRadius(dp(10));
+        g.setCornerRadius(radius);
         if (strokeWidth > 0) g.setStroke(strokeWidth, stroke);
         return g;
+    }
+
+    /** Diálogos escuros, combinando com o resto do app. */
+    private AlertDialog.Builder dlg() {
+        return new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert);
+    }
+
+    private void tintProgress(ProgressBar pb) {
+        ColorStateList c = ColorStateList.valueOf(C_ACCENT_2);
+        pb.setProgressTintList(c);
+        pb.setIndeterminateTintList(c);
     }
 
     private int dp(int v) {
@@ -442,16 +657,19 @@ public class MainActivity extends Activity {
             if (pi == null) return;
             it.pkg = pi.packageName;
             it.version = pi.versionName;
+            it.versionCode = pi.versionCode;
             if (pi.applicationInfo != null) {
                 pi.applicationInfo.sourceDir = path;
                 pi.applicationInfo.publicSourceDir = path;
                 CharSequence l = pi.applicationInfo.loadLabel(pm);
                 if (l != null) it.label = l.toString();
+                try { it.icon = pi.applicationInfo.loadIcon(pm); } catch (Throwable ignored) { }
             }
             try {
                 PackageInfo inst = pm.getPackageInfo(pi.packageName, 0);
                 it.installed = true;
                 it.installedVersion = inst.versionName;
+                it.installedCode = inst.versionCode;
             } catch (PackageManager.NameNotFoundException ignored) {
             }
         } catch (Throwable ignored) {
@@ -462,7 +680,8 @@ public class MainActivity extends Activity {
         items.clear();
         items.addAll(found);
         adapter.notifyDataSetChanged();
-        header.setText("Arquivos encontrados: " + items.size());
+        header.setText("Arquivos encontrados");
+        styleChip(countChip, String.valueOf(items.size()), C_ACCENT_2);
         if (!hasStoragePerm()) {
             empty.setText("Sem permissão para ler os arquivos.\nAperte \"Atualizar lista\" e permita o acesso.");
         } else {
@@ -480,7 +699,7 @@ public class MainActivity extends Activity {
             msg += "\nEste app já está instalado"
                     + (it.installedVersion != null ? " (v" + it.installedVersion + ")" : "") + ".";
         }
-        AlertDialog d = new AlertDialog.Builder(this)
+        AlertDialog d = dlg()
                 .setTitle(it.title())
                 .setMessage(msg)
                 .setPositiveButton("Instalar", (dialog, which) -> installApk(it.file))
@@ -493,7 +712,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmDelete(final ApkItem it) {
-        AlertDialog d = new AlertDialog.Builder(this)
+        AlertDialog d = dlg()
                 .setTitle("Apagar arquivo?")
                 .setMessage(it.file.getName())
                 .setPositiveButton("Apagar", (dialog, which) -> {
@@ -516,7 +735,7 @@ public class MainActivity extends Activity {
     private void installApk(final File f) {
         if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
             pendingInstall = f;
-            new AlertDialog.Builder(this)
+            dlg()
                     .setTitle("Permitir instalação")
                     .setMessage("Para instalar APKs, ative a opção \"Permitir desta fonte\" para o APK Installer na próxima tela e depois volte com o botão Voltar do controle.")
                     .setPositiveButton("Abrir configuração", (dialog, which) -> openUnknownSourcesSettings())
@@ -591,6 +810,7 @@ public class MainActivity extends Activity {
         dlBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         dlBar.setMax(1000);
         dlBar.setIndeterminate(true);
+        tintProgress(dlBar);
         box.addView(dlStatus);
         LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -598,7 +818,7 @@ public class MainActivity extends Activity {
         box.addView(dlBar, barLp);
 
         cancelDownload = false;
-        dlDialog = new AlertDialog.Builder(this)
+        dlDialog = dlg()
                 .setTitle("Baixando arquivo")
                 .setView(box)
                 .setCancelable(false)
@@ -694,7 +914,7 @@ public class MainActivity extends Activity {
             if (out != null) out.delete();
             ui.post(() -> {
                 dismissDownload();
-                new AlertDialog.Builder(MainActivity.this)
+                dlg()
                         .setTitle("Falha no download")
                         .setMessage(e.getMessage() != null ? e.getMessage() : e.toString())
                         .setPositiveButton("OK", null)
@@ -847,7 +1067,10 @@ public class MainActivity extends Activity {
                 it.pkg = firstNonEmpty(j.optString("package_name"), j.optString("pname"));
                 it.label = firstNonEmpty(j.optString("name"), j.optString("app_name"));
                 it.version = firstNonEmpty(j.optString("version_name"), j.optString("versionname"));
+                try { it.versionCode = Long.parseLong(firstNonEmpty(j.optString("version_code"), j.optString("versioncode"))); }
+                catch (Exception ignored) { }
             }
+            it.icon = bundleIcon(zf);
             if (it.pkg == null || it.label == null) {
                 ZipEntry base = findBase(zf);
                 if (base != null) {
@@ -857,11 +1080,15 @@ public class MainActivity extends Activity {
                     if (pi != null) {
                         if (it.pkg == null) it.pkg = pi.packageName;
                         if (it.version == null) it.version = pi.versionName;
+                        if (it.versionCode == 0) it.versionCode = pi.versionCode;
                         if (it.label == null && pi.applicationInfo != null) {
                             pi.applicationInfo.sourceDir = tmp.getAbsolutePath();
                             pi.applicationInfo.publicSourceDir = tmp.getAbsolutePath();
                             CharSequence l = pi.applicationInfo.loadLabel(pm);
                             if (l != null) it.label = l.toString();
+                        }
+                        if (it.icon == null && pi.applicationInfo != null) {
+                            try { it.icon = pi.applicationInfo.loadIcon(pm); } catch (Throwable ignored) { }
                         }
                     }
                     tmp.delete();
@@ -872,12 +1099,27 @@ public class MainActivity extends Activity {
                     PackageInfo inst = pm.getPackageInfo(it.pkg, 0);
                     it.installed = true;
                     it.installedVersion = inst.versionName;
+                    it.installedCode = inst.versionCode;
                 } catch (PackageManager.NameNotFoundException ignored) {
                 }
             }
         } catch (Throwable ignored) {
         } finally {
             if (zf != null) try { zf.close(); } catch (IOException ignored) { }
+        }
+    }
+
+    /** XAPK costuma trazer um icon.png na raiz do pacote. */
+    private Drawable bundleIcon(ZipFile zf) {
+        try {
+            ZipEntry ie = zf.getEntry("icon.png");
+            if (ie == null || ie.getSize() > 4L * 1024 * 1024) return null;
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inSampleSize = 2;
+            Bitmap bmp = BitmapFactory.decodeStream(zf.getInputStream(ie), null, o);
+            return bmp != null ? new BitmapDrawable(getResources(), bmp) : null;
+        } catch (Throwable t) {
+            return null;
         }
     }
 
@@ -944,16 +1186,17 @@ public class MainActivity extends Activity {
         box.addView(status);
         ProgressBar pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         pb.setIndeterminate(true);
+        tintProgress(pb);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(12);
         box.addView(pb, lp);
-        final AlertDialog dlg = new AlertDialog.Builder(this)
+        final AlertDialog dlg = dlg()
                 .setTitle("Instalando pacote")
                 .setView(box)
                 .setCancelable(false)
                 .create();
-        dlg.show();
+        progressDlg.show();
 
         new Thread(() -> {
             ZipFile zf = null;
@@ -1017,14 +1260,14 @@ public class MainActivity extends Activity {
                 session.commit(pend.getIntentSender());
                 session.close();
                 session = null;
-                ui.post(dlg::dismiss);
+                ui.post(progressDlg::dismiss);
             } catch (final Exception e) {
                 if (session != null) {
                     try { session.abandon(); } catch (Exception ignored) { }
                 }
                 ui.post(() -> {
-                    try { dlg.dismiss(); } catch (Exception ignored) { }
-                    new AlertDialog.Builder(MainActivity.this)
+                    try { progressDlg.dismiss(); } catch (Exception ignored) { }
+                    dlg()
                             .setTitle("Falha ao preparar o pacote")
                             .setMessage(e.getMessage() != null ? e.getMessage() : e.toString())
                             .setPositiveButton("OK", null)
@@ -1051,7 +1294,7 @@ public class MainActivity extends Activity {
                 scan();
             } else {
                 String m = i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
-                new AlertDialog.Builder(MainActivity.this)
+                dlg()
                         .setTitle("Falha na instalação")
                         .setMessage(m != null ? m : "Código " + st)
                         .setPositiveButton("OK", null)
