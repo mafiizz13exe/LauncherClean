@@ -11,8 +11,8 @@ android {
         minSdk = 21
         // targetSdk 28: no Fire TV (Fire OS 5/7/8) o app consegue listar a pasta Downloads sem o "acesso a todos os arquivos"
         targetSdk = 28
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     signingConfigs {
