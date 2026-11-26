@@ -9,9 +9,8 @@ android {
     defaultConfig {
         applicationId = "com.mafiizz.apkinstaller"
         minSdk = 21
-        // targetSdk 28: no Fire TV (Fire OS 5/7/8) o app consegue listar a pasta Downloads sem o "acesso a todos os arquivos"
-        targetSdk = 28
-        versionCode = 3
+        targetSdk = 34
+        versionCode = 4
         versionName = "1.2"
     }
 
