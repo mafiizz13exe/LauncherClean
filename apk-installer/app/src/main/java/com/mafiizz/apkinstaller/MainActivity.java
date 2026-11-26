@@ -38,6 +38,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import java.io.File;
@@ -121,7 +122,8 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         buildUi();
-        registerReceiver(installReceiver, new IntentFilter(ACTION_INSTALL_RESULT));
+        ContextCompat.registerReceiver(this, installReceiver, new IntentFilter(ACTION_INSTALL_RESULT),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     @Override
@@ -346,13 +348,46 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- permissões e busca de APKs
 
     private boolean hasStoragePerm() {
+        // Android 11+ (API 30): ler APKs de outros apps em Downloads exige "acesso a todos os arquivos"
+        if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
         if (Build.VERSION.SDK_INT < 23) return true;
         return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
                 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
     }
 
+    // Baixar não exige permissão no Android 10+ (o app grava em Downloads ou na pasta própria)
+    private boolean canDownload() {
+        return Build.VERSION.SDK_INT >= 29 || hasStoragePerm();
+    }
+
+    private void askAllFilesAccess() {
+        new AlertDialog.Builder(this)
+                .setTitle("Acesso aos arquivos")
+                .setMessage("Para encontrar os APKs na pasta Downloads, ative \"Permitir acesso a todos os arquivos\" para o APK Installer na próxima tela e volte com o botão Voltar do controle.")
+                .setPositiveButton("Abrir configuração", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (Exception e) {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                        } catch (Exception e2) {
+                            toast("Este aparelho não tem a tela de acesso a arquivos. Os APKs baixados por aqui continuam aparecendo.");
+                        }
+                    }
+                })
+                .setNegativeButton("Agora não", null)
+                .show();
+    }
+
     private void ensureStorageThenScan(boolean allowAsk) {
         if (hasStoragePerm()) {
+            scan();
+        } else if (Build.VERSION.SDK_INT >= 30) {
+            if (allowAsk && !askedStorage) {
+                askedStorage = true;
+                askAllFilesAccess();
+            }
             scan();
         } else if (allowAsk && !askedStorage && Build.VERSION.SDK_INT >= 23) {
             askedStorage = true;
@@ -374,6 +409,8 @@ public class MainActivity extends Activity {
                 Set<String> seen = new HashSet<>();
                 List<File> roots = new ArrayList<>();
                 roots.add(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS));
+                File own = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                if (own != null) roots.add(own);
                 roots.add(Environment.getExternalStorageDirectory());
                 File[] vols = new File("/storage").listFiles();
                 if (vols != null) {
@@ -382,8 +419,9 @@ public class MainActivity extends Activity {
                         if (!n.equals("emulated") && !n.equals("self")) roots.add(v);
                     }
                 }
+                final File own0 = own;
                 for (int i = 0; i < roots.size(); i++) {
-                    walk(roots.get(i), 0, i == 0 ? 6 : 3, found, seen);
+                    walk(roots.get(i), 0, i == 0 || (own0 != null && roots.get(i).equals(own0)) ? 6 : 3, found, seen);
                 }
                 Collections.sort(found, new Comparator<ApkItem>() {
                     @Override
@@ -576,7 +614,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (!raw.contains("://")) raw = "https://" + raw;
-        if (!hasStoragePerm()) {
+        if (!canDownload()) {
             askedStorage = false;
             ensureStorageThenScan(true);
             toast("Permita o acesso aos arquivos e tente de novo");
@@ -645,8 +683,7 @@ public class MainActivity extends Activity {
             }
 
             String name = fileNameFrom(c, cur);
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (!dir.exists()) dir.mkdirs();
+            File dir = pickDownloadDir();
             out = uniqueFile(dir, name);
 
             final long totalF = total;
@@ -760,6 +797,25 @@ public class MainActivity extends Activity {
         if (name == null || name.length() == 0) name = "app.apk";
         if (!isApkLike(name)) name = name + ".apk";
         return name;
+    }
+
+    // Tenta a pasta Downloads pública; se o sistema negar a gravação (armazenamento com escopo),
+    // usa a pasta própria do app, que não exige permissão.
+    private File pickDownloadDir() {
+        File pub = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        try {
+            if (!pub.exists()) pub.mkdirs();
+            File probe = new File(pub, ".apkinstaller_probe_" + System.nanoTime());
+            if (probe.createNewFile()) {
+                probe.delete();
+                return pub;
+            }
+        } catch (Exception ignored) {
+        }
+        File own = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (own == null) own = new File(getFilesDir(), "downloads");
+        if (!own.exists()) own.mkdirs();
+        return own;
     }
 
     private File uniqueFile(File dir, String name) {
@@ -1041,7 +1097,9 @@ public class MainActivity extends Activity {
         public void onReceive(Context c, Intent i) {
             int st = i.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
             if (st == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-                Intent confirm = (Intent) i.getParcelableExtra(Intent.EXTRA_INTENT);
+                Intent confirm = Build.VERSION.SDK_INT >= 33
+                        ? i.getParcelableExtra(Intent.EXTRA_INTENT, Intent.class)
+                        : (Intent) i.getParcelableExtra(Intent.EXTRA_INTENT);
                 if (confirm != null) {
                     confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     try { startActivity(confirm); } catch (Exception e) { toast("Não foi possível abrir a confirmação: " + e.getMessage()); }
