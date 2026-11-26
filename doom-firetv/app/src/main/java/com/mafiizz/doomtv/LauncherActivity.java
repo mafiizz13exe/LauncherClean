@@ -10,6 +10,9 @@ import android.graphics.drawable.ColorDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -39,6 +42,11 @@ public class LauncherActivity extends Activity {
     private ListView list;
     private TextView status;
     private ArrayAdapter<Game> adapter;
+    private TextView sub;
+    private final Handler handler = new Handler();
+    private boolean cancelled = false;
+    private boolean started = false;
+    private Game mainGame = null;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -57,7 +65,7 @@ public class LauncherActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(title);
 
-        TextView sub = new TextView(this);
+        sub = new TextView(this);
         sub.setText("Escolha o jogo (OK/Select para iniciar)");
         sub.setTextColor(Color.LTGRAY);
         sub.setTextSize(20);
@@ -80,7 +88,7 @@ public class LauncherActivity extends Activity {
             }
         };
         list.setAdapter(adapter);
-        list.setOnItemClickListener((p, v, pos, id) -> start(games.get(pos)));
+        list.setOnItemClickListener((p, v, pos, id) -> { cancelled = true; start(games.get(pos)); });
         root.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         status = new TextView(this);
@@ -140,18 +148,24 @@ public class LauncherActivity extends Activity {
                     }
                 }
             }
-            // 2) Freedoom embutido
+            // 2) Jogos embutidos no APK
             String msg = "";
             try {
                 File iw = new File(getFilesDir(), "iwads");
                 iw.mkdirs();
-                String f1 = copyAsset("freedoom1.wad", iw);
-                String f2 = copyAsset("freedoom2.wad", iw);
-                found.add(new Game("Freedoom: Phase 1  (estilo Doom 1, 4 episódios)", f1));
-                found.add(new Game("Freedoom: Phase 2  (estilo Doom II, 32 fases)", f2));
+                if (assetExists("doom2.wad") && !hasName(found, "doom2.wad")) {
+                    found.add(0, new Game("DOOM II: Hell on Earth", copyAsset("doom2.wad", iw)));
+                }
+                found.add(new Game("Freedoom: Phase 1  (estilo Doom 1, 4 episódios)", copyAsset("freedoom1.wad", iw)));
+                found.add(new Game("Freedoom: Phase 2  (estilo Doom II, 32 fases)", copyAsset("freedoom2.wad", iw)));
             } catch (Exception e) {
-                msg = "Erro ao preparar Freedoom: " + e;
+                msg = "Erro ao preparar os jogos: " + e;
             }
+            // 3) doom2.wad sempre em primeiro (é o jogo principal)
+            Game main = null;
+            for (Game g : found) if (new File(g.path).getName().equalsIgnoreCase("doom2.wad")) { main = g; break; }
+            if (main != null) { found.remove(main); found.add(0, main); }
+            final Game fmain = main;
             final String fmsg = msg;
             runOnUiThread(() -> {
                 games.clear();
@@ -162,8 +176,51 @@ public class LauncherActivity extends Activity {
                     : fmsg);
                 list.requestFocus();
                 if (!games.isEmpty()) list.setSelection(0);
+                mainGame = fmain;
+                if (fmain != null && fmsg.isEmpty() && !cancelled && !started) {
+                    sub.setText("Iniciando DOOM II…  (toque, Voltar ou Menu para escolher outro jogo)");
+                    handler.postDelayed(() -> {
+                        if (!cancelled && !started) start(mainGame);
+                    }, 3000);
+                }
             });
         }).start();
+    }
+
+    private boolean hasName(List<Game> l, String name) {
+        for (Game g : l) if (new File(g.path).getName().equalsIgnoreCase(name)) return true;
+        return false;
+    }
+
+    private boolean assetExists(String name) {
+        try (android.content.res.AssetFileDescriptor afd = getAssets().openFd(name)) {
+            return afd.getLength() > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // qualquer toque/tecla cancela o início automático e deixa escolher o jogo
+    private void cancelAuto() {
+        if (!cancelled && !started) {
+            cancelled = true;
+            sub.setText("Escolha o jogo (OK/Select para iniciar)");
+        }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent ev) {
+        if (ev.getAction() == KeyEvent.ACTION_DOWN && !started && !cancelled && mainGame != null) {
+            cancelAuto();
+            if (ev.getKeyCode() == KeyEvent.KEYCODE_BACK || ev.getKeyCode() == KeyEvent.KEYCODE_MENU) return true;
+        }
+        return super.dispatchKeyEvent(ev);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev.getAction() == MotionEvent.ACTION_DOWN) cancelAuto();
+        return super.dispatchTouchEvent(ev);
     }
 
     private boolean has(List<Game> l, String path) {
@@ -185,6 +242,8 @@ public class LauncherActivity extends Activity {
     }
 
     private void start(Game g) {
+        if (started || g == null) return;
+        started = true;
         String base = new File(g.path).getName().replaceAll("\\.[^.]*$", "");
         File work = new File(getFilesDir(), "save-" + base);
         work.mkdirs();
@@ -192,5 +251,6 @@ public class LauncherActivity extends Activity {
         i.putExtra("iwad", g.path);
         i.putExtra("workdir", work.getAbsolutePath());
         startActivity(i);
+        finish();
     }
 }

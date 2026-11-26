@@ -20,10 +20,12 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <math.h>
 #include <SDL.h>
 
 int dg_menu_active(void);
 int dg_weapon_key(int dir);
+void dg_post_mouse(int dx);
 
 static SDL_Window   *window   = NULL;
 static SDL_Renderer *renderer = NULL;
@@ -233,6 +235,217 @@ static void open_controllers(void)
             SDL_GameControllerOpen(i);
 }
 
+
+/* ---------- toque (celular / tablet) ---------- */
+static int touch_visible = 0;
+static int scrW = 1280, scrH = 720;
+static int turn_acc = 0;
+
+typedef struct { int x, y, r; } circ_t;
+enum { B_FIRE, B_USE, B_NEXT, B_PREV, B_MENU, B_MAP, NBTN };
+static circ_t btn[NBTN];
+static int btn_down[NBTN];
+
+typedef struct { SDL_FingerID id; int type; int btn; float ox, oy, cx, cy; } finger_t;
+#define MAXF 10
+static finger_t fing[MAXF];          /* type: 0 livre, 1 analogico, 2 girar, 3 botao */
+
+static unsigned char ts_key[5];      /* cima, baixo, esq, dir, correr */
+
+static void latch_key(int idx, int on, unsigned char key)
+{
+    if (on && !ts_key[idx]) { ts_key[idx] = key; push(1, key); }
+    else if (!on && ts_key[idx]) { push(0, ts_key[idx]); ts_key[idx] = 0; }
+}
+
+static void layout_buttons(void)
+{
+    int u = scrH;
+    btn[B_FIRE] = (circ_t){ scrW - (u * 22) / 100, scrH - (u * 28) / 100, (u * 15) / 100 };
+    btn[B_USE]  = (circ_t){ scrW - (u * 50) / 100, scrH - (u * 17) / 100, (u * 10) / 100 };
+    btn[B_NEXT] = (circ_t){ scrW - (u * 12) / 100, (u * 14) / 100, (u * 8) / 100 };
+    btn[B_PREV] = (circ_t){ scrW - (u * 30) / 100, (u * 14) / 100, (u * 8) / 100 };
+    btn[B_MENU] = (circ_t){ scrW / 2, (u * 9) / 100, (u * 7) / 100 };
+    btn[B_MAP]  = (circ_t){ scrW / 2 - (u * 20) / 100, (u * 9) / 100, (u * 6) / 100 };
+}
+
+static void button_action(int b, int pressed)
+{
+    int menu = dg_menu_active();
+    switch (b)
+    {
+    case B_FIRE: press_ctx(16 + B_FIRE, pressed, KEY_ENTER, KEY_FIRE); break;
+    case B_USE:  press_ctx(16 + B_USE, pressed, KEY_ESCAPE, KEY_USE); break;
+    case B_NEXT: if (pressed) { if (menu) tap('y'); else tap((unsigned char) dg_weapon_key(1)); } break;
+    case B_PREV: if (pressed) { if (menu) tap('n'); else tap((unsigned char) dg_weapon_key(-1)); } break;
+    case B_MENU: press_ctx(16 + B_MENU, pressed, KEY_ESCAPE, KEY_ESCAPE); break;
+    case B_MAP:  press_ctx(16 + B_MAP, pressed, KEY_TAB, KEY_TAB); break;
+    }
+}
+
+static void stick_update(finger_t *f, int active)
+{
+    float R = scrH * 0.16f;
+    float vx = active ? (f->cx - f->ox) / R : 0.0f;
+    float vy = active ? (f->cy - f->oy) / R : 0.0f;
+    float mag = sqrtf(vx * vx + vy * vy);
+    int menu = dg_menu_active();
+    latch_key(0, vy < -0.35f, KEY_UPARROW);
+    latch_key(1, vy >  0.35f, KEY_DOWNARROW);
+    latch_key(2, vx < -0.35f, menu ? KEY_LEFTARROW  : ',');
+    latch_key(3, vx >  0.35f, menu ? KEY_RIGHTARROW : '.');
+    latch_key(4, !menu && mag > 0.9f, KEY_RSHIFT);
+}
+
+static finger_t *find_finger(SDL_FingerID id)
+{
+    int i;
+    for (i = 0; i < MAXF; i++)
+        if (fing[i].type && fing[i].id == id) return &fing[i];
+    return NULL;
+}
+
+static int stick_busy(void)
+{
+    int i;
+    for (i = 0; i < MAXF; i++) if (fing[i].type == 1) return 1;
+    return 0;
+}
+
+static void finger_down(SDL_FingerID id, float nx, float ny)
+{
+    int i, b;
+    float x = nx * scrW, y = ny * scrH;
+    finger_t *f = NULL;
+    touch_visible = 1;
+    for (i = 0; i < MAXF; i++) if (!fing[i].type) { f = &fing[i]; break; }
+    if (!f) return;
+    f->id = id; f->ox = f->cx = x; f->oy = f->cy = y;
+    for (b = 0; b < NBTN; b++)
+    {
+        float dx = x - btn[b].x, dy = y - btn[b].y, r = btn[b].r * 1.2f;
+        if (dx * dx + dy * dy <= r * r)
+        {
+            f->type = 3; f->btn = b; btn_down[b] = 1;
+            button_action(b, 1);
+            return;
+        }
+    }
+    if (x < scrW * 0.45f && !stick_busy()) { f->type = 1; stick_update(f, 1); }
+    else f->type = 2;
+}
+
+static void finger_motion(SDL_FingerID id, float nx, float ny, float ndx)
+{
+    finger_t *f = find_finger(id);
+    if (!f) return;
+    f->cx = nx * scrW; f->cy = ny * scrH;
+    if (f->type == 1) stick_update(f, 1);
+    else if (f->type == 2 && !dg_menu_active()) turn_acc += (int)(ndx * 4000.0f);
+}
+
+static void finger_up(SDL_FingerID id)
+{
+    finger_t *f = find_finger(id);
+    if (!f) return;
+    if (f->type == 1) stick_update(f, 0);
+    else if (f->type == 3) { btn_down[f->btn] = 0; button_action(f->btn, 0); }
+    f->type = 0;
+}
+
+static void fill_circle(int cx, int cy, int r)
+{
+    int dy;
+    for (dy = -r; dy <= r; dy++)
+    {
+        int w = (int) sqrtf((float)(r * r - dy * dy));
+        SDL_Rect rc = { cx - w, cy + dy, 2 * w + 1, 1 };
+        SDL_RenderFillRect(renderer, &rc);
+    }
+}
+
+static void fill_tri(int cx, int cy, int s, int right)
+{
+    int x;
+    for (x = -s; x <= s; x++)
+    {
+        int h = (s - x) / 2;
+        int px = right ? cx + x : cx - x;
+        SDL_Rect rc = { px, cy - h, 1, 2 * h + 1 };
+        SDL_RenderFillRect(renderer, &rc);
+    }
+}
+
+static void rect(int x, int y, int w, int h)
+{
+    SDL_Rect rc = { x, y, w, h };
+    SDL_RenderFillRect(renderer, &rc);
+}
+
+static void draw_button(int b)
+{
+    circ_t c = btn[b];
+    int a = btn_down[b] ? 190 : 95;
+    int t = scrH / 90 + 2;
+    int r = c.r;
+    if (b == B_FIRE)      SDL_SetRenderDrawColor(renderer, 220, 30, 20, a);
+    else if (b == B_USE)  SDL_SetRenderDrawColor(renderer, 230, 190, 40, a);
+    else                  SDL_SetRenderDrawColor(renderer, 190, 190, 200, a);
+    fill_circle(c.x, c.y, r);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
+    switch (b)
+    {
+    case B_FIRE:   /* mira */
+        rect(c.x - r / 2, c.y - t / 2, r, t);
+        rect(c.x - t / 2, c.y - r / 2, t, r);
+        break;
+    case B_USE:    /* porta */
+        rect(c.x - r / 3, c.y - r / 2, (2 * r) / 3, r);
+        SDL_SetRenderDrawColor(renderer, 40, 30, 10, 230);
+        rect(c.x + r / 8, c.y - t / 2, t + 2, t + 2);
+        break;
+    case B_NEXT:  fill_tri(c.x, c.y, r / 2, 1); break;
+    case B_PREV:  fill_tri(c.x, c.y, r / 2, 0); break;
+    case B_MENU:
+        rect(c.x - r / 2, c.y - r / 2, r, t);
+        rect(c.x - r / 2, c.y - t / 2, r, t);
+        rect(c.x - r / 2, c.y + r / 2 - t, r, t);
+        break;
+    case B_MAP:
+        rect(c.x - r / 2, c.y - r / 2, r, t);
+        rect(c.x - r / 2, c.y + r / 2 - t, r, t);
+        rect(c.x - r / 2, c.y - r / 2, t, r);
+        rect(c.x + r / 2 - t, c.y - r / 2, t, r);
+        break;
+    }
+}
+
+static void draw_overlay(void)
+{
+    int i, b;
+    if (!touch_visible) return;
+    SDL_RenderSetLogicalSize(renderer, 0, 0);
+    SDL_GetRendererOutputSize(renderer, &scrW, &scrH);
+    layout_buttons();
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    for (b = 0; b < NBTN; b++) draw_button(b);
+    for (i = 0; i < MAXF; i++)
+    {
+        if (fing[i].type == 1)
+        {
+            int R = (int)(scrH * 0.16f);
+            float dx = fing[i].cx - fing[i].ox, dy = fing[i].cy - fing[i].oy;
+            float d = sqrtf(dx * dx + dy * dy);
+            if (d > R) { dx = dx * R / d; dy = dy * R / d; }
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 50);
+            fill_circle((int) fing[i].ox, (int) fing[i].oy, R);
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 170);
+            fill_circle((int)(fing[i].ox + dx), (int)(fing[i].oy + dy), (int)(scrH * 0.07f));
+        }
+    }
+    SDL_RenderSetLogicalSize(renderer, 640, 480);
+}
+
 /* ---------- eventos ---------- */
 static void handleInput(void)
 {
@@ -252,6 +465,9 @@ static void handleInput(void)
             unsigned char k;
             SDL_Keycode sym = e.key.keysym.sym;
             if (e.key.repeat) break;
+            if (pressed && sym != SDLK_AC_BACK && sym != SDLK_ESCAPE &&
+                sym != SDLK_VOLUMEUP && sym != SDLK_VOLUMEDOWN)
+                touch_visible = 0;
             if (sym == SDLK_SELECT || sym == SDLK_AUDIOPLAY ||
                 sym == SDLK_AUDIOSTOP || sym == SDLK_AUDIOREWIND || sym == SDLK_AUDIOFASTFORWARD ||
                 sym == SDLK_MENU || sym == SDLK_APPLICATION)
@@ -266,19 +482,31 @@ static void handleInput(void)
         case SDL_CONTROLLERDEVICEADDED:
             SDL_GameControllerOpen(e.cdevice.which);
             break;
+        case SDL_FINGERDOWN:
+            finger_down(e.tfinger.fingerId, e.tfinger.x, e.tfinger.y);
+            break;
+        case SDL_FINGERMOTION:
+            finger_motion(e.tfinger.fingerId, e.tfinger.x, e.tfinger.y, e.tfinger.dx);
+            break;
+        case SDL_FINGERUP:
+            finger_up(e.tfinger.fingerId);
+            break;
         case SDL_CONTROLLERBUTTONDOWN:
+            touch_visible = 0;
             controller_button((SDL_GameControllerButton) e.cbutton.button, 1);
             break;
         case SDL_CONTROLLERBUTTONUP:
             controller_button((SDL_GameControllerButton) e.cbutton.button, 0);
             break;
         case SDL_CONTROLLERAXISMOTION:
+            if (e.caxis.value > DEADZONE || e.caxis.value < -DEADZONE) touch_visible = 0;
             controller_axis((SDL_GameControllerAxis) e.caxis.axis, e.caxis.value);
             break;
         default:
             break;
         }
     }
+    if (turn_acc) { dg_post_mouse(turn_acc); turn_acc = 0; }
     flush_pending();
 }
 
@@ -287,6 +515,7 @@ void DG_Init(void)
 {
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
 
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
 
@@ -295,6 +524,9 @@ void DG_Init(void)
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer)
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+
+    SDL_GetRendererOutputSize(renderer, &scrW, &scrH);
+    touch_visible = SDL_GetNumTouchDevices() > 0;
 
     /* O Doom é 4:3 com pixels não quadrados: 640x400 esticado para 640x480 */
     SDL_RenderSetLogicalSize(renderer, 640, 480);
@@ -312,6 +544,7 @@ void DG_DrawFrame(void)
     SDL_UpdateTexture(texture, NULL, DG_ScreenBuffer, DOOMGENERIC_RESX * sizeof(uint32_t));
     SDL_RenderClear(renderer);
     SDL_RenderCopy(renderer, texture, NULL, NULL);
+    draw_overlay();
     SDL_RenderPresent(renderer);
     handleInput();
 }

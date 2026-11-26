@@ -2,6 +2,8 @@
 #include "doomstat.h"
 #include "d_player.h"
 #include "doomdef.h"
+#include "d_event.h"
+#include <string.h>
 
 int dg_menu_active(void)
 {
@@ -50,4 +52,16 @@ int dg_weapon_key(int dir)
             return key_for_weapon(w);
     }
     return 0;
+}
+
+/* Giro (como mouse) vindo do arraste na tela; dx em unidades do Doom. */
+void dg_post_mouse(int dx)
+{
+    event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = ev_mouse;
+    ev.data1 = 0;
+    ev.data2 = dx;
+    ev.data3 = 0;
+    D_PostEvent(&ev);
 }

@@ -2,3 +2,6 @@
 build/
 local.properties
 .idea/
+
+# nunca versionar WADs comerciais
+*.wad
