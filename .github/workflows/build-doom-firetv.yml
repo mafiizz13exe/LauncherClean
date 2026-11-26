@@ -1,0 +1,78 @@
+name: Build Doom Fire TV
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'doom-firetv/**'
+      - '.github/workflows/build-doom-firetv.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.9 }
+      - name: Instalar NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+      - name: Baixar fontes (SDL2, SDL2_mixer, doomgeneric, Freedoom)
+        working-directory: doom-firetv
+        run: |
+          set -e
+          JNI=app/src/main/jni
+          git clone -q --depth 1 --branch release-2.30.8 https://github.com/libsdl-org/SDL.git /tmp/SDL
+          git clone -q --depth 1 --branch release-2.8.0 https://github.com/libsdl-org/SDL_mixer.git /tmp/SDL_mixer
+          git clone -q https://github.com/ozkl/doomgeneric.git /tmp/doomgeneric
+          git -C /tmp/doomgeneric checkout -q e257a09527062bfb986b6e5e0780839b6cbd5b71
+          mkdir -p $JNI/SDL $JNI/SDL2_mixer $JNI/src/doom app/src/main/java/org/libsdl/app app/src/main/assets
+          cp -r /tmp/SDL/. $JNI/SDL/ && rm -rf $JNI/SDL/.git
+          cp -r /tmp/SDL_mixer/. $JNI/SDL2_mixer/ && rm -rf $JNI/SDL2_mixer/.git
+          cp /tmp/SDL/android-project/app/src/main/java/org/libsdl/app/*.java app/src/main/java/org/libsdl/app/
+          cp /tmp/doomgeneric/doomgeneric/*.c /tmp/doomgeneric/doomgeneric/*.h $JNI/src/doom/
+          curl -fsSL -o /tmp/freedoom.zip https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip
+          unzip -j -o /tmp/freedoom.zip '*/freedoom1.wad' '*/freedoom2.wad' -d app/src/main/assets/
+          unzip -j -o /tmp/freedoom.zip '*/COPYING.txt' -d /tmp/ && cp /tmp/COPYING.txt app/src/main/assets/freedoom-COPYING.txt
+          ls -la app/src/main/assets
+      - name: Compilar
+        working-directory: doom-firetv
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon 2>&1 | tee ../build-doom.log
+      - name: Salvar erros do build (branch ci-log-doom)
+        if: failure()
+        run: |
+          grep -E "^e: |error:|FAILED|What went wrong|Execution failed|undefined reference|ld: |ndk-build" -B2 -A6 build-doom.log | head -300 > /tmp/errors.txt || true
+          tail -60 build-doom.log >> /tmp/errors.txt
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout --orphan ci-log-doom
+          git rm -rf . > /dev/null 2>&1 || true
+          cp /tmp/errors.txt build-errors.txt
+          git add build-errors.txt
+          git commit -m "erros do build do Doom TV ${{ github.run_number }}" > /dev/null
+          git push -f origin ci-log-doom
+      - name: Nomear o APK
+        run: cp doom-firetv/app/build/outputs/apk/release/*.apk Doom-FireTV.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Doom-FireTV
+          path: Doom-FireTV.apk
+      - name: Publicar na aba Releases (link fixo)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete doom-firetv --cleanup-tag -y || true
+          gh release create doom-firetv Doom-FireTV.apk \
+            --target "$GITHUB_SHA" \
+            --title "Doom TV (Fire TV)" \
+            --notes "Doom para Fire TV Stick (motor doomgeneric + SDL2, com Freedoom embutido). Build ${{ github.run_number }}. Baixe Doom-FireTV.apk e instale." \
+            --latest=false
